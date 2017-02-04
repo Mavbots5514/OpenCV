@@ -1,4 +1,3 @@
-//#include <opencv2/opencv.hpp>
 #include <opencv2/highgui/highgui.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgproc/imgproc.hpp>
@@ -8,123 +7,121 @@
 #include <PracticalSocket.h>
 
 
-	
+class cameraTracking{
 
-int main()
-{
-	//Camera settings to use, enter from command line
-	system("v4l2-ctl -d /dev/video0 -c exposure_absolute=5");
-	system("v4l2-ctl -d /dev/video0 -c brightness=3");
-	system("v4l2-ctl -d /dev/video0 -c saturation=83");
-	system("v4l2-ctl -d /dev/video0 -c contrast=0");
-	
-
-	char packet[64];
-    	UDPSocket sock;
-  
-    	// Repeatedly send the string (not including \0) to the server
- 
-	cv::namedWindow("orig", cv::WINDOW_NORMAL);	
-	//cv::namedWindow("contour", cv::WINDOW_NORMAL);	
-	cv::namedWindow("mask", cv::WINDOW_NORMAL);	
-	cv::VideoCapture cap;
-
-	/*
-	cv::resizeWindow("orig", 360,360);	
-	cv::resizeWindow("color", 360,360);	
-	cv::resizeWindow("mask", 360,360);	
-	*/	
-
-	cap.open(0);
-
-
-	if (!cap.isOpened()) {
-		//std::cerr << "Couldn't open" << std::endl;
-		return -1;
-	}
-
-	cv::Mat frame;
-	cv::Mat pFrame;
-	cv::Mat pFrame_hsv;
-	cv::Mat mask;
-	cv::Mat canny;
-
-
-	cv::Scalar contourColor(0,255,0);
-	while(1) {
-		cap>>frame;
+	public:
+		cameraTracking(int , string, unsigned short);
+		void updateFrame();
+		void findRect(cv::Mat);
+		double getAngle(int, int, int, int);
+		double getAngleRad(){return angleRad;}
+		double getAngleDeg(){return angleRad*180/M_PI;}
+		void sendPacket();
+	private:
+		cameraTracking(){};
 		
-		cv::copyMakeBorder(frame, frame, 3, 3, 3, 3, cv::BORDER_CONSTANT, cv::Scalar(0,0,0)); 
-				
+		cv::VideoCapture cap;
+		cv::Mat frame;
+		cv::Mat hsvFilter;
+		cv::Mat mask;
+		cv::Mat bitWiseMat;
+		cv::Mat edges;
+		cv::Scalar contourColor(0,255,0);
+		int midLeftx;
+		int midLefty;
+		int midRightx; 
+		int midRighty;
+		int midLinex;
+		int offset;
+		double angleRad;
+		unsigned short port;
+		string destAddress;
 
-		cv::cvtColor(frame, pFrame_hsv, cv::COLOR_RGB2HSV);
-		
-		cv::inRange(pFrame_hsv, cv::Scalar(30, 80, 100), cv::Scalar(85, 255, 255), mask);
-		
-
-		cv::bitwise_and(pFrame_hsv, pFrame_hsv, pFrame, mask);
-		
-		cv::Mat element = cv::getStructuringElement(0/*Morph_rect*/,cv::Size(2*5+1,2*5+1), cv::Point(5,5));
-		
-		cv::erode(mask,mask,element);
-		cv::dilate(mask,mask,element);		
-
-		cv::Mat realMask = mask.clone();		
-		
-		cv::Canny(mask, canny, 100, 150);
-
-		std::vector<std::vector<cv::Point> > contours;
-		cv::findContours(canny, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_TC89_KCOS);
-		
-		//cv::drawContours(frame, contours, -1, contourColor);
-
+	cameraTracking(int cameraNumber, string destAddress, unsigned short port){
+		if(!cap.open(cameraNumber)){
+			std::cerr<<"Could not open camera"<<cameraNumber<<std::endl;
+		}
+		//no null ints
 		int midLeftx = 0;
 		int midLefty = 0;
 		int midRightx = 0; 
 		int midRighty = 0;
+		int midLinex = 0;
+		int offset = 0;
 		double angleRad = 0;
-		double angleDeg = 0;
-		for(const std::vector<cv::Point> contour : contours){
-			std::vector<cv::Point> quad(4);
-			int a = cv::contourArea(contour);
-			cv::RotatedRect rrect;
-			if(a>10){
-				//std::cout<<a<<" = area size"<<std::endl;
-				cv::approxPolyDP(contour, quad, 20, true);
-				rrect = cv::minAreaRect(contour);
+
+		this.destAddress = destAddress;
+		this.port = port;
+	}
+
+	void updateFrame(){
+		//takes the videofeed from the camera and places the frame into the frame Mat
+		cap>>frame;
+		
+		//adds a border to the frame Mat to increase accuracy of finding boxes on border cases
+		cv::MakeBorder(frame, frame, 3, 3, 3, 3, cv::BORDER_CONSTANT, cv::Scalar(0,0,0));
+
+		//takes image from frame and converts it to HSV and puts it into the hsvFilter
+		cv::cvtColor(frame, hsvFilter, cv::COLOR_RGB2HSV);
+
+		//finds all values that are part of the green lights and puts them into the mask Mat
+		cv::inRange(hsvFilter,  cv::Scalar(30,80,100), cv::Scalar(85, 255, 255), mask);
+
+		//ands the image to itself using the mask to get the values and puts them into the bitWiseMat
+		cv::bitwise_and(hsvFilter, hsvFilter, bitWiseMat, mask);
+
+		//creates element to give shape and size to erode and dilate operations to reduce noise in the image
+		cv::Mat element = cv::getStructuringElement(cv::MORPH_RECT,cv::Size(2*5+1,2*5+1), cv::Point(5,5));
+		cv::erode(mask,mask,element);
+		cv::dilate(mask,mask,element);
+
+		//find edges and store them in the edges Mat
+		cv::Canny(mask, edges, 100,150);
+
+		//finds the rectangles and gets their coordinates
+		findRect(&edges);
+
+		//gets angle of the vertex of the two centers of the two rectangles and the bottom of the frame
+		angleRad = getAngle(midLeftx - midRightx, midLefty - midRighty, 1, 0);
+
+		//finds offset between midLine and midFrame
+		offset = ((double)(midLine-frame.cols/2))/((double)(frame.cols/2))*100;
+
+
+	}
+
+	void findRect(cv::Mat &edges){
+		//holds all the contors found for a given object outer vector is the object and inner vectore is the set of points that make the object
+		std::vector<std::vector<cv::Point> > contours;
+
+		//find contours from edges Mat and place them in contours
+		cv::findContours(edges, contours, cv::RETR_EXTERNAL, CV::CHAIN_APPROX_TC89_KCOS);
+
+		//used for offset and angle
+		midLeftx = 0;
+		midLefty = 0;
+		midRightx = 0; 
+		midRighty = 0;
+		angleRad = 0;
+		angleDeg = 0;
+
+		//for each region in contours
+		for(const std::vector<cv::Point> contour: contours){
+
+			//if the region is large enough then do the computation
+			if(cv::contourArea(contour)>10){
 				
-				/*double dot = abs(quad[0].x*quad[1].x + quad[0].y*quad[1].y);
-				double mag1 = sqrt(quad[0].x*quad[0].x + quad[0].y*quad[0].y);
-				double mag2 = sqrt(quad[1].x*quad[1].x + quad[1].y*quad[1].y);
-				//std::cout<<"Dot = "<<dot<<" Mag1 = "<<mag1<<" Mag2 = "<<mag2<<std::endl;	
-				angleRad = acos(dot/(mag1*mag2));
-				angleDeg = angleRad*180/M_PI;*/
-			}
+				//make a 4 sided polygon surrounding the region
+				//cv::approxPolyDP(contour, quad, 20, true);
 
-			if(quad.size() == 4){
-				int distLine = std::max(quad[0].y, quad[3].y);
-				int midLine = (quad[0].x + quad[3].x)/2;
+				//make a rectangle surrounding the region with the smallest area 
+				cv::RotatedRect rrect = cv::minAreaRect(contour);
 				
-				//cv::line(frame, {0, distLine}, {frame.cols, distLine}, contourColor);
-				//cv::line(frame, {midLine, 0}, {midLine, frame.rows}, contourColor);
-				
-				//cv::Rect rect = cv::boundingRect(contour);
-				
-				//cv::Rect rect = rrect.boundingRect();
-
-				//cv::Point2f verticies[4];
-				//rrect.points(verticies);
-				for(int i = 0; i <4; i++){
-					//line(frame, verticies[i], verticies[(i+1)%4], cv::Scalar(255,0,0), 4);
-					line(frame, quad[i], quad[(i+1)%4], cvScalar(0,0,255),4);
-				}
-
-
-				//cv::rectangle(frame,rect.tl(), rect.br(), contourColor, 2);
-
+				//assign the two rectangles center coordinates for further calculation
 				if(midLeftx == 0){
 					midLeftx = (rrect.center.x);
 					midLefty = (rrect.center.y);
+					//if there is only one box on the screen make the first one the only considered box
 					midRightx = (rrect.center.x);
 					midRighty = (rrect.center.y);
 				}else if(midRightx == midLeftx){
@@ -132,55 +129,45 @@ int main()
 					midRighty = (rrect.center.y);
 				}
 			}
+		}//end for loop on contours
 
-		}
+		//makes left rectangle on the left if it isn't already
 		if(midLeftx>midRightx){
 			int temp = midLeftx;
 			midLeftx = midRightx;
 			midRightx = temp;
-		}else if(midLeftx == midRightx && midLeftx == 0){
+		}else if(midLeftx == midRightx && midLeftx == 0){//if no rectagles are found do nothing
 			midLeftx = frame.cols/2;
 			midRightx = frame.cols/2;
 		}
-		int midLine = midLeftx + abs(midLeftx-midRightx)/2;
-		cv::line(frame, {midLine, 0}, {midLine,frame.rows}, contourColor, 2); 
-		
-		cv::line(frame, {frame.cols/2,0}, {frame.cols/2, frame.rows}, contourColor, 2);
-		
-		std::vector<int> a(2,0);
-		a[0] = midLeftx - midRightx;
-		a[1] = midLefty - midRighty;
-		std::vector<int> b(1,0);
-		b[0] = 1;
-		b[1] = 0;
-		double dot = abs(a[0]*b[0] + a[1]*b[1]);
-		double mag1 = sqrt(a[0]*a[0] + a[1]*a[1]);
-		double mag2 = sqrt(b[0]*b[0] + b[1]*b[1]);
-		//std::cout<<"Dot = "<<dot<<" Mag1 = "<<mag1<<" Mag2 = "<<mag2<<std::endl;	
-		if(mag1*mag2!= 0){
-			angleRad = acos(dot/(mag1*mag2));
-			angleDeg = angleRad*180/M_PI;
-		}	
-		
-	 	int offset = ((double)(midLine-frame.cols/2))/((double)(frame.cols/2))*100;
-		std::cout<<"Offset  = "<<offset<<" Angle = "<<angleDeg<<std::endl;
 
-		int temp = offset;
-		int temp2 = (int)(angleDeg * 100);
-		//std::cout << sizeof(int)<<endl;
+		midLinex = midLeftx + (midRightx-midLeftx)/2;
 
-		memcpy(packet, &temp, sizeof temp);
-		memcpy(&packet[4], &temp2, sizeof temp2);
-
-		
-  		string destAddress = "10.55.14.63";             // First arg:  destination address
-  		unsigned short destPort = 9876;  // Second arg: destination port
-      		sock.sendTo(packet, 8, destAddress, destPort);
-		cv::imshow("orig", frame);	
-		cv::imshow("mask", realMask);	
-		//cv::imshow("contour", canny);	
-		if (cv::waitKey(33) >=0) {
-			break;
-		}	
 	}
+
+	//uses the dot product to find the angle between two vectors, returns -1 if a vector is <0,0>
+
+	double getAngle(int x1, int y1, int x2, int y2){
+		int dot = abs(x1*x2 + y1*y2);
+		int mag1 = sqrt(x1*x1 + y1*y1);
+		int mag2 = sqrt(x2*x2 + y2*y2);
+		
+		if(mag1 != 0 && mag2 != 0){
+			return acos(dot/(mag1*mag2));
+		}
+		return -1;
+	}
+
+	void sendPacket(){
+		char packet[64];
+
+		memcpy(packet, &offest, sizeof offest);
+		memcpy(&packet[4], (int)angleRad*100, sizeof int);
+
+		UDPSocket sock;
+
+		sock.sendTo(packet, destAddress, port);
+	}
+
+
 }
